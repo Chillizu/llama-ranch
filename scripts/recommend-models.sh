@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# recommend-models.sh — live HuggingFace GGUF search with fits hints.
+# Usage:
+#   recommend-models.sh "<query>" [--ram <gib>] [--ctx <tokens>]
+# Stages (no hardcoded model tables — always live):
+#   1. search        /api/models?search=..&filter=gguf&full=true  → GGUF sibling filenames
+#   2. sizes         /api/models/<id>?blobs=true per model         → .gguf file sizes
+#   3. KV math       base-model config.json (from base_model: tag) → real n_layer/kv_heads/head_dim
+# Then prints a table with a fits hint against --ram (weights + exact fp16 KV + ~2 GiB buffer).
+# Networks that block HF directly: set HF_PROXY (e.g. HF_PROXY=socks5h://127.0.0.1:7891).
+# Falls back to a web_search hint if the API is unreachable.
+set -euo pipefail
+
+query="${1:-}"
+[ -z "$query" ] && { echo "usage: $0 \"<query>\" [--ram <gib>] [--ctx <tokens>]"; exit 1; }
+shift
+
+ram=""; ctx=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --ram) ram="$2"; shift 2 ;;
+        --ctx) ctx="$2"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 1 ;;
+    esac
+done
+
+API="https://huggingface.co/api/models"
+LIMIT=20
+MAX_MODELS=8   # per-model fetch budget (sizes + config)
+PROXY="${HF_PROXY:-}"
+CURL_ARGS=(-sS --max-time 20)
+[ -n "$PROXY" ] && CURL_ARGS+=(--proxy "$PROXY")
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo "curl not found — use web_search instead:  ${query} GGUF site:huggingface.co"
+    exit 0
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found — use web_search instead:  ${query} GGUF site:huggingface.co"
+    exit 0
+fi
+
+q=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))' "$query")
+url="${API}?search=${q}&filter=gguf&limit=${LIMIT}&full=true"
+resp=$(curl "${CURL_ARGS[@]}" "$url" || true)
+if [ -z "$resp" ] || ! printf '%s' "$resp" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+    echo "HF API unreachable — use web_search instead:  ${query} GGUF"
+    exit 0
+fi
+
+# Stage 2+3: per distinct model, fetch .gguf sizes and the base model's config for KV math.
+# Emit "model_id<TAB>base_model_id" for the first few distinct models.
+mapfile -t idpairs < <(printf '%s' "$resp" | python3 -c '
+import json,sys
+MAX=int(sys.argv[1])
+d=json.load(sys.stdin)
+seen=[]
+for m in d:
+    mid=m.get("id")
+    if mid and mid not in seen:
+        seen.append(mid)
+        base=[t.split(":",1)[1] for t in m.get("tags",[]) if t.startswith("base_model:") and "quantized" not in t]
+        print(mid + "\t" + (base[0] if base else ""))
+' "$MAX_MODELS")
+
+blobs="{}"   # model_id -> siblings[] (with size)
+configs="{}" # model_id -> {"n_layer":..,"n_kv":..,"head_dim":..}
+for pair in "${idpairs[@]}"; do
+    id="${pair%%$'\t'*}"
+    base="${pair#*$'\t'}"
+    [ "$base" = "$id" ] && base=""
+
+    b=$(curl "${CURL_ARGS[@]}" "${API}/${id}?blobs=true" || true)
+    if [ -n "$b" ] && printf '%s' "$b" | python3 -c 'import json,sys;json.load(sys.stdin)' 2>/dev/null; then
+        blobs=$(python3 -c '
+import json,sys
+acc=json.loads(sys.argv[1]); one=json.loads(sys.argv[2])
+acc[one.get("id")]=one.get("siblings",[])
+print(json.dumps(acc))
+' "$blobs" "$b")
+    fi
+
+    if [ -n "$base" ]; then
+        cfg=$(curl "${CURL_ARGS[@]}" "https://huggingface.co/${base}/raw/main/config.json" 2>/dev/null || true)
+        if [ -n "$cfg" ] && printf '%s' "$cfg" | python3 -c 'import json,sys;json.load(sys.stdin)' 2>/dev/null; then
+            configs=$(python3 -c '
+import json,sys
+acc=json.loads(sys.argv[1]); c=json.loads(sys.argv[2])
+# some multimodal configs nest the language block under text_config/llm_config
+if "num_hidden_layers" not in c:
+    for k in ("text_config","llm_config"):
+        if k in c: c=c[k]; break
+n_layer=c.get("num_hidden_layers"); n_kv=c.get("num_key_value_heads", c.get("num_attention_heads"))
+head_dim=c.get("head_dim")
+if head_dim is None and c.get("hidden_size") and c.get("num_attention_heads"):
+    head_dim=c.get("hidden_size")//c.get("num_attention_heads")
+if n_layer and n_kv and head_dim:
+    acc[sys.argv[3]]={"n_layer":n_layer,"n_kv":n_kv,"head_dim":head_dim}
+print(json.dumps(acc))
+' "$configs" "$cfg" "$id")
+        fi
+    fi
+done
+
+python3 - "$ram" "$ctx" "$query" "$resp" "$blobs" "$configs" <<'PY'
+import json, re, sys
+
+ram = float(sys.argv[1]) if sys.argv[1] else None
+ctx = int(sys.argv[2]) if sys.argv[2] else None
+query = sys.argv[3]
+resp = json.loads(sys.argv[4])
+blobs = json.loads(sys.argv[5])     # id -> siblings[] (with size)
+configs = json.loads(sys.argv[6])   # id -> {n_layer,n_kv,head_dim}
+
+QUANT = re.compile(r'(IQ\d+_[A-Z]+|Q\d+_[A-Z]+_?[A-Z]*|FP16|F16|BF16|FP32|F32)', re.I)
+GB = 1073741824
+
+def kv_bytes_per_token(cfg):
+    # KV = 2 * n_layers * n_kv_heads * head_dim * bytes(fp16=2)   (K and V each)
+    return 2 * cfg["n_layer"] * cfg["n_kv"] * cfg["head_dim"] * 2
+
+by_name = {}
+for sibs in blobs.values():
+    for s in sibs:
+        by_name[s.get("rfilename")] = s.get("size")
+
+rows = []
+for model in resp:
+    mid = model.get("id", "")
+    for sib in model.get("siblings", []):
+        name = sib.get("rfilename", "")
+        if not name.lower().endswith(".gguf") or any(x in name.lower() for x in ("split", "-00001", "-of-")):
+            continue
+        qm = QUANT.search(name)
+        quant = qm.group(1).upper() if qm else "?"
+        rows.append((mid, quant, by_name.get(name), name))
+
+if not rows:
+    print("No GGUF siblings found for query. Try web_search:  %s GGUF site:huggingface.co" % query)
+    sys.exit(0)
+
+seen = set(); out = []
+for mid, quant, size_b, name in rows:
+    key = (mid, quant)
+    if key in seen: continue
+    seen.add(key)
+    out.append((mid, quant, size_b, name))
+
+kv_txt = f" @ ctx={ctx}" if ctx else ""
+hdr = f"{'model':<40} {'quant':<12} {'size_GiB':>9} {'KV_GiB':>8}  fits"
+print(hdr); print("-" * len(hdr))
+for mid, quant, size_b, name in out:
+    gib = (size_b / GB) if size_b else None
+    cfg = configs.get(mid)
+    kv_gib = None
+    if cfg:
+        kv_gib = kv_bytes_per_token(cfg) * (ctx or 8192) / GB
+    if gib is None:
+        print(f"{mid[:39]:<40} {quant:<12} {'?':>9} {'?':>8}  -")
+        continue
+    fits = ""
+    if ram is not None:
+        kv_use = kv_gib if kv_gib is not None else 0.0
+        headroom = gib + kv_use + 2  # weights + KV + buffer
+        fits = "OK" if headroom <= ram else "no"
+    print(f"{mid[:39]:<40} {quant:<12} {gib:>8.1f} {(kv_gib or 0):>8.2f}  {fits}")
+if ram is not None and not any(configs.get(m) for m,_,_,_ in out):
+    print("(KV column missing where base-model config was unavailable; fits uses weights + 2 GiB buffer only)")
+PY

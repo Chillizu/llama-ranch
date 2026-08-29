@@ -1,0 +1,5 @@
+# runtime state
+*.pid
+*.log
+*.state
+.DS_Store
