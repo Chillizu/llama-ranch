@@ -53,8 +53,8 @@ Field semantics:
 - `gpu_memory_gib`: `null` when the backend is shared-memory or the value couldn't be read. Treat as "no dedicated VRAM budget".
 - `memory_type`: `dedicated` | `shared`.
 - `cpu_efficient`: an estimate of non-performance (efficiency/LP) cores from `lscpu -e` max-boost-MHz tiers; `0` means no hybrid split detected. Use only as a hint — for exact P/E pinning read the CPU topology directly.
-- `suggested_backend`: first guess; always confirm with `llama-server --list-devices` (a build compiled without the right backend silently falls back to CPU).
-- `suggested_backend`: first guess; always confirm with `llama-server --list-devices` (a build compiled without the right backend silently falls back to CPU).
+-- `suggested_backend`: first guess; always confirm with `llama-server --list-devices` (a build compiled without the right backend silently falls back to CPU).
+-- `suggested_backend`: first guess; always confirm with `llama-server --list-devices` (a build compiled without the right backend silently falls back to CPU).
 
 ## Verification
 

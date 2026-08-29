@@ -15,7 +15,8 @@ Device-agnostic guide to run, recommend, and tune local GGUF models on whatever 
 - Debug llama.cpp crashes (`DeviceLost`, reasoning-content swallowed, tool-call garbage, KV corruption).
 - Build a personal model manager script, or connect pi/OpenCode to a local endpoint.
 
-## Workflow
++0. **Bootstrap** (fresh machine, no llama.cpp yet) → ensure a `llama-server` binary and a model file exist: build/install llama.cpp with the backend matching `detect-device.sh`, verify `llama-server --list-devices`, download a `.gguf` into `MODEL_DIR`. See `references/bootstrap.md`.
+1. **Detect** the device → `scripts/detect-device.sh` (OS, GPU vendor/model/memory, shared-vs-dedicated, RAM, CPU cores incl. efficiency topology, suggested backend). See `references/device-detection.md`.
 
 1. **Detect** the device → `scripts/detect-device.sh` (OS, GPU vendor/model/memory, shared-vs-dedicated, RAM, CPU cores incl. efficiency topology, suggested backend). See `references/device-detection.md`.
 2. **Pick** a model → `scripts/recommend-models.sh "<name>" --ram <gib>` (live HuggingFace search, GGUF quants + sizes, fits hints). Capacity math + KV-cache budget in `references/model-selection.md`.
@@ -44,8 +45,8 @@ Device-agnostic guide to run, recommend, and tune local GGUF models on whatever 
 
 ## References (read on demand)
 
-- `references/device-detection.md` — detection principles, backend mapping, capacity accounting, output contract.
-- `references/model-selection.md` — capacity formula, KV-cache math, live-search decision tree.
+-- `references/bootstrap.md` — from-zero setup: build/install llama.cpp with the right backend, verify --list-devices, download a model.
+-
 - `references/tuning.md` — quantization / context / threads / samplers methodology, decode ceiling, decay behavior.
 - `references/stability.md` — generic bug → fix matrix, regression recipe.
 - `references/agentic.md` — local agentic via OpenAI-compatible endpoint, tool-call verification, bench methodology, pi wiring.

@@ -26,7 +26,7 @@ SKILL.md                          frontmatter (name/description) + decision flow
 scripts/detect-device.sh          one-shot device capability report → JSON
 scripts/recommend-models.sh       live HuggingFace GGUF search + fits hints
 scripts/llmctl-template.sh        parameterized personal model manager
-references/*.md                   on-demand detail (detection, selection, tuning, stability, agentic, manager)
+references/*.md                   on-demand detail (bootstrap, detection, selection, tuning, stability, agentic, manager)
 ```
 
 ## Notes
