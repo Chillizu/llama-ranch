@@ -15,9 +15,7 @@ Device-agnostic guide to run, recommend, and tune local GGUF models on whatever 
 - Debug llama.cpp crashes (`DeviceLost`, reasoning-content swallowed, tool-call garbage, KV corruption).
 - Build a personal model manager script, or connect pi/OpenCode to a local endpoint.
 
-+0. **Bootstrap** (fresh machine, no llama.cpp yet) → ensure a `llama-server` binary and a model file exist: build/install llama.cpp with the backend matching `detect-device.sh`, verify `llama-server --list-devices`, download a `.gguf` into `MODEL_DIR`. See `references/bootstrap.md`.
-1. **Detect** the device → `scripts/detect-device.sh` (OS, GPU vendor/model/memory, shared-vs-dedicated, RAM, CPU cores incl. efficiency topology, suggested backend). See `references/device-detection.md`.
-
+0. **Bootstrap** (fresh machine, no llama.cpp yet) → ensure a `llama-server` binary and a model file exist: build/install llama.cpp with the backend matching `detect-device.sh`, verify `llama-server --list-devices`, download a `.gguf` into `MODEL_DIR`. See `references/bootstrap.md`.
 1. **Detect** the device → `scripts/detect-device.sh` (OS, GPU vendor/model/memory, shared-vs-dedicated, RAM, CPU cores incl. efficiency topology, suggested backend). See `references/device-detection.md`.
 2. **Pick** a model → `scripts/recommend-models.sh "<name>" --ram <gib>` (live HuggingFace search, GGUF quants + sizes, fits hints). Capacity math + KV-cache budget in `references/model-selection.md`.
 3. **Tune** inference → quantization, `-c` context, `-t` threads, KV-cache type, samplers in `references/tuning.md`.
