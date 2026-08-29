@@ -1,5 +1,5 @@
 ---
-name: local-llm
+name: llama-ranch
 description: Run, swap, tune, and recommend local GGUF LLMs on any GPU via llama.cpp. Use when the user wants to deploy a local model, pick a model that fits their VRAM/RAM, quantize or set context/threads/samplers for their hardware, debug llama.cpp crashes or reasoning-template bugs, or build a personal model manager (llmctl-style). Also for local agentic coding with pi/OpenCode against a local OpenAI-compatible endpoint. Triggers on mentions of llama.cpp, local LLM, GGUF, GPU offload, quantization, VRAM, or "run a model locally" — even if the user doesn't name a tool.
 ---
 

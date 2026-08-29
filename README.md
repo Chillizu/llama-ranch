@@ -1,4 +1,4 @@
-# local-llm
+# llama-ranch
 
 Device-agnostic Agent Skill for running, recommending, and tuning **local GGUF LLMs on any GPU** via [llama.cpp](https://github.com/ggml-org/llama.cpp).
 
@@ -7,7 +7,7 @@ Detects the machine, picks a model + quantization that fits its VRAM/RAM, tunes 
 ## Install
 
 ```bash
-npx skills add Chillizu/local-llm
+npx skills add Chillizu/llama-ranch
 ```
 
 ## What it does
