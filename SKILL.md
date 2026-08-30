@@ -43,8 +43,7 @@ Device-agnostic guide to run, recommend, and tune local GGUF models on whatever 
 
 ## References (read on demand)
 
--- `references/bootstrap.md` — from-zero setup: build/install llama.cpp with the right backend, verify --list-devices, download a model.
--
+- `references/bootstrap.md` — from-zero setup: build/install llama.cpp with the right backend, verify --list-devices, download a model.
 - `references/tuning.md` — quantization / context / threads / samplers methodology, decode ceiling, decay behavior.
 - `references/stability.md` — generic bug → fix matrix, regression recipe.
 - `references/agentic.md` — local agentic via OpenAI-compatible endpoint, tool-call verification, bench methodology, pi wiring.
