@@ -24,7 +24,7 @@ Generic symptoms → root causes → fixes. No vendor-specific labels; verify th
 
 - **Symptom**: tool call args become "assassass…" loops.
 - **Cause**: default penalty samplers punish the JSON punctuation the tool format needs.
-- **Fix**: `--samplers top_k;top_p;min_p;temperature` (drop `penalties`). Keep penalties in the *agentic* profile if that profile is verified to copy JSON exactly — distinguish the two cases (garbage loop ⇒ drop penalties; verified exact-copy ⇒ keep).
+- **Fix**: `--samplers top_k;top_p;min_p;temperature` (drop `penalties`). Keep penalties in the *agentic* profile if that profile is verified to copy JSON exactly — distinguish the two cases (garbage loop ⇒ drop penalties; verified exact-copy ⇒ keep). See the complementary agentic-template recipe in `tuning.md` (Samplers).
 
 ## Profile file missing trailing newline
 

@@ -56,7 +56,7 @@ Patterns (verify on your hardware, they vary):
   -c <ctx> -np 1 --jinja
   --samplers penalties;top_k;top_p;min_p;temperature
   ```
-- Modern models already suppress repetition; over-strong penalties can hurt long-tail tokens. Measure before changing defaults — don't follow convention blindly.
+- Modern models already suppress repetition; over-strong penalties can hurt long-tail tokens. Measure before changing defaults — don't follow convention blindly. Note the two failure modes: for *tool-arg garbage loops* drop penalties entirely (see `stability.md`); the template above keeps penalties only because that profile is verified to copy JSON exactly.
 
 ## Priority (optional)
 

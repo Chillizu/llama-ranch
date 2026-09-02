@@ -1,6 +1,6 @@
 # Build your own manager
 
-A personal, llmctl-style model manager is a thin wrapper over `llama-server`: it resolves a model query to a `.gguf`, assembles flags, manages the process, stores per-model profiles, and (optionally) wires an agentic client. `scripts/llmctl-template.sh` is a ready-to-adapt implementation; this file explains its design and how to adapt it.
+A personal, llmctl-style model manager is a thin wrapper over `llama-server`: it resolves a model query to a `.gguf`, assembles flags, manages the process, stores per-model profiles, and (optionally) wires an OpenAI-compatible client. `scripts/llmctl-template.sh` is a ready-to-adapt implementation; this file explains its design and how to adapt it.
 
 ## Design
 
@@ -23,7 +23,7 @@ One chat server at a time: `start` stops the previous one first. This avoids GPU
 | `status` | running model, key params, matching profile, endpoint, health probe |
 | `profile <name> [variant] [args…]` | set/remove a profile (no args = remove) |
 | `profile --show [name]` | view profile(s) |
-| `pi [<model> [variant]] [-- args…]` | ensure server + health, then `exec` pi wired to it |
+| `client [<model|#> [variant]] [-- cmd…]` | ensure server + health, then exec `cmd` with `OPENAI_BASE_URL`/`OPENAI_API_KEY` set (no `cmd` → print the export lines) |
 
 ## Profiles
 
@@ -37,7 +37,7 @@ One chat server at a time: `start` stops the previous one first. This avoids GPU
 - **`model@variant` sugar**: `start qwen longctx` and `start qwen@longctx` are equivalent; translate the latter to the two-arg form.
 - **Port-busy guard**: before launching, check the target port; if an unrelated process owns it, abort and print the owner PID + kill hint. This prevents the "silent wrong server" trap (your request hitting an old instance on the same port).
 - **Early-death check**: 2s after launch, if the PID died, dump the log tail and exit 1 (catches bad flags / port races instantly).
-- **Built-in health wait**: poll `/health` (print `ok` or `loading…`); cold model load can take a while — `pi` waits up to a generous timeout.
+- **Built-in health wait**: poll `/health` (print `ok` or `loading…`); cold model load can take a while — `client` waits up to a generous timeout.
 - **Priority boost**: `renice -10` + `oom_score_adj -1000` (needs privileged access), optional.
 - **Status profile line**: `status` shows which saved profile (or `custom`) the running args match — important when a profile was overridden at launch.
 
@@ -47,6 +47,6 @@ One chat server at a time: `start` stops the previous one first. This avoids GPU
 2. **Backend flags**: run `scripts/detect-device.sh`, then set `BACKEND_FLAGS` per the mapping in `references/device-detection.md` (e.g. `-ngl -1 --no-mmap` for Vulkan integrated; `-ngl -1` for CUDA/Metal).
 3. **CPU pinning**: set `PIN_CPUS` to your P-core list (from `lscpu -p` / CPU topology sysfs) so decode doesn't run on efficiency cores.
 4. **Defaults**: adjust `DEFAULT_PORT` and the default sampler/context set in `references/tuning.md` for your workload.
-5. **Verify**: `list`, `start <model>`, `status` (health ok), `profile <model> -c 8192`, then `stop`. Wire `pi` last, confirming `LLAMA_SERVER_URL` reaches the local endpoint.
+5. **Verify**: `list`, `start <model>`, `status` (health ok), `profile <model> -c 8192`, then `stop`. Wire `client` last, confirming `OPENAI_BASE_URL` reaches the local endpoint.
 
 Rename the script (`llmctl-template.sh` → `llmctl` or your own name) and drop it on your `PATH`.

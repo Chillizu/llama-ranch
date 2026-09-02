@@ -1,22 +1,31 @@
 # Agentic with a local model
 
-Running pi / OpenCode against a local OpenAI-compatible endpoint (llama-server), verifying tool calls, and benchmarking a model for agentic coding.
+Pointing any OpenAI-compatible agentic/coding client at llama-server, verifying tool calls, and benchmarking a model for agentic coding. Tool-agnostic: the skill does not assume a specific client — if it accepts a custom OpenAI-compatible base URL, it works.
 
-## Wiring pi to a local endpoint
+## Wiring a client to the local endpoint
 
-A personal manager (`llmctl-template.sh`) automates this; the raw equivalent is:
+llama-server exposes the OpenAI-compatible API under `/v1` (`/v1/chat/completions`, `/v1/models`, …). Any client that can be pointed at a custom OpenAI-compatible base URL works:
 
-```bash
-LLAMA_SERVER_URL=http://127.0.0.1:<PORT> \
-pi --provider "llama-server=http://127.0.0.1:<PORT>" \
-   --model "/path/to/<model>.gguf" \
-   --thinking off \
-   -p "task" --no-session
-```
+- **base_url**: `http://127.0.0.1:<PORT>/v1`
+- **api_key**: any non-empty value (llama-server ignores it unless started with `--api-key`)
 
-- `LLAMA_SERVER_URL` must be set — without it pi falls back to a cloud provider (symptom: unexpected remote TPM limits).
-- **Thinking mapping**: server `--reasoning on` → pi `--thinking medium`; `--reasoning off` → `--thinking off`. Keep `--thinking` under agent control (`--` passthrough overrides).
-- A manager's `pi` subcommand: ensure the server is running (start if needed, reuse if the same model), wait for `/health` ok, then `exec` pi wired to that endpoint. Model mismatch auto-restarts the server for the requested model.
+Common wiring patterns, in order of preference:
+
+1. **Env-var convention** — many CLIs honor `OPENAI_BASE_URL` + `OPENAI_API_KEY`:
+   ```bash
+   export OPENAI_BASE_URL=http://127.0.0.1:<PORT>/v1
+   export OPENAI_API_KEY=local
+   <your-client> ...
+   ```
+2. **`llmctl client`** (from the manager template) — ensures the server for the requested model is running and healthy, then either prints the export lines or execs a command of your choice with the env already set:
+   ```bash
+   llmctl client <model|#>              # print export lines
+   llmctl client <model|#> -- <cmd> ... # exec <cmd> with env wired
+   ```
+3. **Client-side provider config** — clients with config files: add a provider of type "openai-compatible" (naming varies) with the base URL above and a dummy key.
+
+- If the client silently falls back to a cloud provider (symptom: unexpected remote TPM/rate limits), the base URL is not being honored — confirm with the server log (`llmctl log -f`) or by stopping the server and watching the client error.
+- **Thinking/reasoning**: server `--reasoning on` streams reasoning content; clients that expose a "thinking" toggle should be set to match. For agentic loops prefer reasoning OFF (per-step thinking before every tool call drags the loop; see `tuning.md`).
 
 ## Verifying tool calls
 
@@ -40,7 +49,7 @@ curl -s http://127.0.0.1:<PORT>/v1/chat/completions \
 
 ## Agent coding bench (methodology)
 
-A 6-task battery, run via pi and scored independently:
+A 6-task battery, run through the same client and scored independently:
 
 1. JSON parsing edge cases
 2. LRU cache implementation
@@ -49,11 +58,11 @@ A 6-task battery, run via pi and scored independently:
 5. log-regex extraction
 6. binary-search boundary cases
 
-Score each task pass/fail by running the produced artifact against tests — do not trust the model's self-report. Compare models on the same tasks, same flags, same thermal state.
+Score each task pass/fail by running the produced artifact against tests — do not trust the model's self-report. Compare models on the same tasks, same flags, same thermal state. Keep the task definitions and tests fixed in your own repo so comparisons stay meaningful over time.
 
 ## Operational gotchas
 
-- **Silent stdout redirect**: when pi's stdout is redirected to a file, it can look like "no output / timeout" while it is still decoding normally — check the manager's log for the `n_gen` line before assuming a hang.
+- **Silent stdout redirect**: when a CLI client's stdout is redirected to a file, it can look like "no output / timeout" while it is still decoding normally — check the server log for the generation progress lines before assuming a hang.
 - **Orphaned requests**: killing a client leaves an orphaned request that occupies the single slot and makes everything else queue (deadlock look). If the slot is stuck, kill and restart the server.
 - **Slot release latency**: after killing a client, the server finishes the current ubatch before freeing the slot (can take minutes for a huge request). Before re-sending a large request, confirm the slot is actually free.
 - **Long tasks**: self-test-style tasks can emit 600+ tokens; at a slow decode rate budget ≥10 min timeout.
