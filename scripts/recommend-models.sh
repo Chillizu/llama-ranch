@@ -9,6 +9,7 @@
 # Then prints a table with a fits hint against --ram (weights + exact fp16 KV + ~2 GiB buffer).
 # Networks that block HF directly: set HF_PROXY (e.g. HF_PROXY=socks5h://127.0.0.1:7891).
 # Falls back to a web_search hint if the API is unreachable.
+# bash 3.2-compatible (no mapfile) — works on stock macOS.
 set -euo pipefail
 
 query="${1:-}"
@@ -50,7 +51,11 @@ fi
 
 # Stage 2+3: per distinct model, fetch .gguf sizes and the base model's config for KV math.
 # Emit "model_id<TAB>base_model_id" for the first few distinct models.
-mapfile -t idpairs < <(printf '%s' "$resp" | python3 -c '
+# (while-read instead of mapfile — bash 3.2 has no mapfile)
+idpairs=()
+while IFS= read -r pair; do
+    [ -n "$pair" ] && idpairs+=("$pair")
+done < <(printf '%s' "$resp" | python3 -c '
 import json,sys
 MAX=int(sys.argv[1])
 d=json.load(sys.stdin)
@@ -65,7 +70,7 @@ for m in d:
 
 blobs="{}"   # model_id -> siblings[] (with size)
 configs="{}" # model_id -> {"n_layer":..,"n_kv":..,"head_dim":..}
-for pair in "${idpairs[@]}"; do
+for pair in ${idpairs[@]+"${idpairs[@]}"}; do
     id="${pair%%$'\t'*}"
     base="${pair#*$'\t'}"
     [ "$base" = "$id" ] && base=""
@@ -112,44 +117,66 @@ resp = json.loads(sys.argv[4])
 blobs = json.loads(sys.argv[5])     # id -> siblings[] (with size)
 configs = json.loads(sys.argv[6])   # id -> {n_layer,n_kv,head_dim}
 
-QUANT = re.compile(r'(IQ\d+_[A-Z]+|Q\d+_[A-Z]+_?[A-Z]*|FP16|F16|BF16|FP32|F32)', re.I)
+QUANT = re.compile(r'\b(I?Q\d+_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*|BF16|FP16|FP32|F16|F32)\b', re.I)
+SPLIT = re.compile(r'-\d{5}-of-\d{5}\.gguf$', re.I)
 GB = 1073741824
 
 def kv_bytes_per_token(cfg):
     # KV = 2 * n_layers * n_kv_heads * head_dim * bytes(fp16=2)   (K and V each)
     return 2 * cfg["n_layer"] * cfg["n_kv"] * cfg["head_dim"] * 2
 
+# Key sizes by (repo_id, filename): bare filenames collide across repos
+# ("qwen2.5-7b-instruct-q4_k_m.gguf" exists in many), which used to attach
+# the wrong repo's size to a row.
 by_name = {}
-for sibs in blobs.values():
+for repo, sibs in blobs.items():
     for s in sibs:
-        by_name[s.get("rfilename")] = s.get("size")
+        by_name[(repo, s.get("rfilename"))] = s.get("size")
 
-rows = []
+# Aggregate split GGUFs ("...-00001-of-00003.gguf") into one row per file,
+# summing part sizes — large models are usually distributed split.
+agg = {}
+order = []
 for model in resp:
     mid = model.get("id", "")
     for sib in model.get("siblings", []):
         name = sib.get("rfilename", "")
-        if not name.lower().endswith(".gguf") or any(x in name.lower() for x in ("split", "-00001", "-of-")):
+        if not name.lower().endswith(".gguf"):
             continue
-        qm = QUANT.search(name)
+        norm = SPLIT.sub('.gguf', name)
+        qm = QUANT.search(norm)
         quant = qm.group(1).upper() if qm else "?"
-        rows.append((mid, quant, by_name.get(name), name))
+        key = (mid, norm, quant)
+        if key not in agg:
+            agg[key] = {"size": 0, "have": False, "parts": 0}
+            order.append(key)
+        size = by_name.get((mid, name))
+        if size:
+            agg[key]["size"] += size
+            agg[key]["have"] = True
+        if SPLIT.search(name):
+            agg[key]["parts"] += 1
+
+rows = []
+seen = set()
+for key in order:
+    mid, norm, quant = key
+    if (mid, quant) in seen:
+        continue
+    seen.add((mid, quant))
+    e = agg[key]
+    # Surface split-ness in the quant cell (e.g. "Q8_0 (2p)") — parts are
+    # summed into one row, and the underlying filename is never printed.
+    qdisp = quant + (" (%dp)" % e["parts"] if e["parts"] else "")
+    rows.append((mid, qdisp, e["size"] if e["have"] else None))
 
 if not rows:
     print("No GGUF siblings found for query. Try web_search:  %s GGUF site:huggingface.co" % query)
     sys.exit(0)
 
-seen = set(); out = []
-for mid, quant, size_b, name in rows:
-    key = (mid, quant)
-    if key in seen: continue
-    seen.add(key)
-    out.append((mid, quant, size_b, name))
-
-kv_txt = f" @ ctx={ctx}" if ctx else ""
 hdr = f"{'model':<40} {'quant':<12} {'size_GiB':>9} {'KV_GiB':>8}  fits"
 print(hdr); print("-" * len(hdr))
-for mid, quant, size_b, name in out:
+for mid, quant, size_b in rows:
     gib = (size_b / GB) if size_b else None
     cfg = configs.get(mid)
     kv_gib = None
@@ -164,6 +191,6 @@ for mid, quant, size_b, name in out:
         headroom = gib + kv_use + 2  # weights + KV + buffer
         fits = "OK" if headroom <= ram else "no"
     print(f"{mid[:39]:<40} {quant:<12} {gib:>8.1f} {(kv_gib or 0):>8.2f}  {fits}")
-if ram is not None and not any(configs.get(m) for m,_,_,_ in out):
+if ram is not None and not any(configs.get(m) for m,_,_ in rows):
     print("(KV column missing where base-model config was unavailable; fits uses weights + 2 GiB buffer only)")
 PY
