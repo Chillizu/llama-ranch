@@ -4,7 +4,8 @@
 # (fill BACKEND_FLAGS from scripts/detect-device.sh, set MODEL_DIR / PIN_CPUS).
 #
 # Subcommands:  list | start <name|#|name@variant> [args...] | stop | status
-#               profile <name|#> [variant] [args...] | profile --show [name] | pi [...]
+#               profile <name|#> [variant] [args...] | profile --show [name]
+#               client [<model|#> [variant]] [-- <command>...]  (generic OpenAI-compatible wiring)
 #
 # One chat server at a time. Profiles are single-line llama-server arg files,
 # stored at <PROFILE_DIR>/<model> and <PROFILE_DIR>/<model>@<variant>.
@@ -60,10 +61,10 @@ section() { printf '\n%s%s%s\n' "$C_BOLD$C_CYAN" "$1" "$C_RESET"; }
 summarize_args() {
     local text="$1" out="" key v
     for key in -c -t --temp --port; do
-        v=$(printf '%s' "$text" | tr ' ' '\n' | grep -A1 -- "^${key}$" | tail -1)
+        v=$(printf '%s' "$text" | tr ' ' '\n' | grep -A1 -- "^${key}$" | tail -1 || true)
         [ -n "$v" ] && [[ "$v" != -* ]] && out+="${key} ${v}  "
     done
-    local rv; rv=$(printf '%s' "$text" | tr ' ' '\n' | grep -A1 -- '^--reasoning$' | tail -1)
+    local rv; rv=$(printf '%s' "$text" | tr ' ' '\n' | grep -A1 -- '^--reasoning$' | tail -1 || true)
     [ -n "$rv" ] && out+="think:$rv  "
     printf '%s' "$out"
 }
@@ -81,23 +82,36 @@ list_profile_variants() {
 }
 
 # --- helpers ---
-find_models() { find -L "$MODEL_DIR" -name "*.gguf" -type f | sort; }
+find_models() { (find -L "$MODEL_DIR" -name "*.gguf" -type f 2>/dev/null || true) | sort; }
 model_name() { basename "$1" .gguf; }
 profile_file() { local name="$1" variant="${2:-}"; [ -n "$variant" ] && echo "$PROFILE_DIR/$name@$variant" || echo "$PROFILE_DIR/$name"; }
 
 find_model_by_query() {
+    # Resolve "#index" or name-substring to a model path.
+    # ALWAYS returns 0: under `set -e`, a non-zero return here would kill the
+    # script inside `x=$(find_model_by_query ...)` before the caller could
+    # print its friendly "Model not found" message. Callers check for empty.
     local query="$1"
     if [[ "$query" =~ ^[0-9]+$ ]]; then
-        local i=1
+        local i=1 total model
+        total=$(find_models | wc -l | tr -d ' ')
+        if [ "$query" -lt 1 ] || [ "$query" -gt "$total" ]; then
+            return 0    # out of range -> empty; do NOT fall through to grep
+                        # (a bare number like 5 would silently match "qwen2.5...")
+        fi
         while IFS= read -r model; do
-            [ "$i" -eq "$query" ] && { echo "$model"; return; }
+            if [ "$i" -eq "$query" ]; then echo "$model"; return 0; fi
             i=$((i+1))
         done < <(find_models)
+        return 0
     fi
-    find_models | grep -i "$query" | head -1
+    local m=""
+    m=$(find_models | grep -i -e "$query" | head -n 1 || true)
+    [ -n "$m" ] && echo "$m"
+    return 0
 }
 
-port_of() { printf '%s\n' "$1" | tr ' ' '\n' | grep -A1 -- '^--port$' | tail -1; }
+port_of() { printf '%s\n' "$1" | tr ' ' '\n' | grep -A1 -- '^--port$' | tail -1 || true; }
 
 # --- commands ---
 cmd_list() {
@@ -118,7 +132,8 @@ cmd_list() {
             echo "$output"
         fi
     done < <(find_models)
-    [ "$has" -eq 0 ] && echo "Profiles: (none)"
+    if [ "$has" -eq 0 ]; then echo "Profiles: (none)"; fi
+    return 0
 }
 
 stop_chat() {
@@ -126,10 +141,30 @@ stop_chat() {
     if [ -f "$STATE_DIR/chat.pid" ]; then
         pid=$(cat "$STATE_DIR/chat.pid")
         if kill -0 "$pid" 2>/dev/null; then
-            [ -z "${1:-}" ] && echo "Stopping chat server (PID $pid)"
-            kill -TERM "$pid" 2>/dev/null || true
-            sleep 1
-            kill -KILL "$pid" 2>/dev/null || true
+            # Identity check before killing: a recycled PID could belong to an
+            # unrelated process — never kill blindly off a stale pid file.
+            local cmdline bin_name
+            cmdline=$(ps -p "$pid" -o args= 2>/dev/null || true)
+            bin_name=$(basename "$SERVER_BIN")
+            case "$cmdline" in
+                *llama-server*|*"$bin_name"*)
+                    [ -z "${1:-}" ] && echo "Stopping chat server (PID $pid)"
+                    kill -TERM "$pid" 2>/dev/null || true
+                    # Graceful shutdown: llama-server may need a moment (ubatch
+                    # flush, model unload). Wait up to 10s before SIGKILL.
+                    local i=0
+                    while [ $i -lt 10 ]; do
+                        kill -0 "$pid" 2>/dev/null || break
+                        sleep 1; i=$((i+1))
+                    done
+                    if kill -0 "$pid" 2>/dev/null; then
+                        kill -KILL "$pid" 2>/dev/null || true
+                    fi
+                    ;;
+                *)
+                    echo "Stale pid file (PID $pid is not ${bin_name}: ${cmdline:-process gone}), cleaning"
+                    ;;
+            esac
         elif [ -z "${1:-}" ]; then
             echo "Chat: stale pid file, cleaning"
         fi
@@ -165,7 +200,10 @@ cmd_start() {
     local profile_args=() pf; pf=$(profile_file "$name" "$variant")
     if [ -f "$pf" ]; then
         read -ra profile_args < "$pf" || true
-        [ ${#extra_args[@]} -eq 0 ] && { echo "Using profile for '$name${variant:+@$variant}': ${profile_args[*]}"; set -- "${profile_args[@]}"; }
+        if [ ${#extra_args[@]} -eq 0 ]; then
+            echo "Using profile for '$name${variant:+@$variant}': ${profile_args[*]}"
+            set -- ${profile_args[@]+"${profile_args[@]}"}
+        fi
     fi
 
     echo "Starting '${name}${variant:+@${variant}}'"
@@ -188,7 +226,7 @@ cmd_start() {
         launch_prefix=(taskset -c "$PIN_CPUS")
     fi
 
-    nohup "${launch_prefix[@]}" "$SERVER_BIN" -m "$model_path" $BACKEND_FLAGS "$@" \
+    nohup ${launch_prefix[@]+"${launch_prefix[@]}"} "$SERVER_BIN" -m "$model_path" $BACKEND_FLAGS "$@" \
         > "$LOG_DIR/llmctl-chat.log" 2>&1 &
     local pid=$!
     echo "$pid" > "$STATE_DIR/chat.pid"
@@ -244,7 +282,7 @@ cmd_profile() {
                 name=$(model_name "$model"); output=$(list_profile_variants "$name")
                 [ -n "$output" ] && { [ "$any" -eq 0 ] && echo "Profiles:" && any=1; echo "  $name:"; echo "$output"; }
             done < <(find_models)
-            [ "$any" -eq 0 ] && echo "Profiles: (none)"
+            if [ "$any" -eq 0 ]; then echo "Profiles: (none)"; fi
         else
             local query="$1"; shift; local variant=""
             [ $# -gt 0 ] && [[ "$1" != -* ]] && variant="$1"
@@ -259,7 +297,7 @@ cmd_profile() {
                 list_profile_variants "$name"
             fi
         fi
-        return
+        return 0
     fi
     [ -z "${1:-}" ] && { echo "Usage: llmctl profile <name|#> [variant] [args...]"; cmd_list; exit 1; }
     local query="$1"; shift
@@ -278,11 +316,16 @@ cmd_profile() {
     fi
 }
 
-cmd_pi() {
-    local start_args=() pi_args=() seen=0 a
+cmd_client() {
+    # Ensure the server for <model> is running & healthy, then exec the given
+    # command with OpenAI-compatible env pointing at it. Tool-agnostic: any
+    # client that honors OPENAI_BASE_URL / OPENAI_API_KEY works.
+    # Usage: llmctl client [<model|#> [variant]] [-- <command> [args...]]
+    #   with no -- <command>, print the equivalent export lines instead.
+    local start_args=() client_args=() seen=0 a
     for a in "$@"; do
         [ "$a" = "--" ] && { seen=1; continue; }
-        if [ "$seen" = 1 ]; then pi_args+=("$a"); else start_args+=("$a"); fi
+        if [ "$seen" = 1 ]; then client_args+=("$a"); else start_args+=("$a"); fi
     done
     local running_model="" rargs="" port=""
     if [ -f "$STATE_DIR/chat.pid" ] && kill -0 "$(cat "$STATE_DIR/chat.pid")" 2>/dev/null; then
@@ -296,7 +339,7 @@ cmd_pi() {
         [ -z "$mpath" ] && { echo "Model not found: $query"; exit 1; }
         rname=$(model_name "$mpath")
         if [ "$running_model" != "$rname" ]; then
-            cmd_start "${start_args[@]}"
+            cmd_start ${start_args[@]+"${start_args[@]}"}
             running_model=$(cat "$STATE_DIR/chat.model")
             rargs=$(cat "$STATE_DIR/chat.args")
             port=$(port_of "$rargs"); port="${port:-$DEFAULT_PORT}"
@@ -304,25 +347,28 @@ cmd_pi() {
             echo "Server already running '$rname' — reusing"
         fi
     fi
-    [ -z "$running_model" ] && { echo "No server running. Usage: pi <model|#> [variant] [-- pi args...]"; exit 1; }
+    if [ -z "$running_model" ]; then
+        echo "No server running. Usage: client <model|#> [variant] [-- command args...]"
+        exit 1
+    fi
     local i=0
     while [ $i -lt 90 ]; do
         curl -s --max-time 2 "http://127.0.0.1:${port}/health" 2>/dev/null | grep -q ok && break
         sleep 2; i=$((i+1))
     done
-    [ $i -ge 90 ] && { echo "Server health check timed out on port $port"; exit 1; }
-    local mpath; mpath=$(find_models | grep -F "/$running_model.gguf" | head -1)
-    [ -z "$mpath" ] && { echo "Cannot locate gguf for running model '$running_model'"; exit 1; }
-    local reasoning; reasoning=$(printf '%s' "$rargs" | tr ' ' '\n' | grep -A1 -- '^--reasoning$' | tail -1)
-    local think="off"; [ "$reasoning" = "on" ] && think="medium"
-    local has_think=0 a
-    for a in "${pi_args[@]}"; do [[ "$a" == --thinking* ]] && has_think=1; done
-    printf "%spi ->%s %s @ http://127.0.0.1:%s (thinking %s)\n" "$C_GREEN" "$C_RESET" "$running_model" "$port" "$think"
-    local -a think_args=()
-    [ $has_think -eq 0 ] && think_args=(--thinking "$think")
-    exec env LLAMA_SERVER_URL="http://127.0.0.1:$port" \
-        pi --provider "llama-server=http://127.0.0.1:$port" \
-           --model "$mpath" "${think_args[@]}" "${pi_args[@]}"
+    if [ $i -ge 90 ]; then echo "Server health check timed out on port $port"; exit 1; fi
+    local base_url="http://127.0.0.1:${port}/v1"
+    printf "%sendpoint%s %s\n" "$C_GREEN" "$C_RESET" "$base_url"
+    if [ ${#client_args[@]} -eq 0 ]; then
+        cat <<EOF
+Wire your client (any OpenAI-compatible tool):
+  export OPENAI_BASE_URL=$base_url
+  export OPENAI_API_KEY=local   # any non-empty value; llama-server ignores it unless --api-key is set
+EOF
+        return 0
+    fi
+    exec env OPENAI_BASE_URL="$base_url" OPENAI_API_KEY="${OPENAI_API_KEY:-local}" \
+        ${client_args[@]+"${client_args[@]}"}
 }
 
 cmd_status() {
@@ -379,7 +425,10 @@ Usage: llmctl <command> [args]
 Commands:
   list                                    list all .gguf models and saved profiles
   start <name|#|name@variant> [args...]   start a model; variant = 2nd arg or name@variant
-  pi [<model|#> [variant]] [-- args]      ensure server then exec pi against it
+  client [<model|#> [variant]] [-- cmd]   ensure server + health, then exec cmd with
+                                          OPENAI_BASE_URL/OPENAI_API_KEY set
+                                          (works with any OpenAI-compatible client;
+                                           no cmd: print the export lines)
   profile <name|#> [variant] [args...]    set/remove a profile (or variant)
   profile --show [name|#] [variant]       show profile(s)
   stop                                    stop the running chat
@@ -398,12 +447,14 @@ Notes:
   - Profiles stored in <PROFILE_DIR>/, named "<ModelName>" or "<ModelName>@variant".
   - Profile files must end with a trailing newline (missing \n silently breaks reads).
   - 'start' without extra args uses the saved profile (default or variant).
+  - 'client' is tool-agnostic: any OpenAI-compatible CLI/chat UI that accepts a
+    custom base URL can be pointed at the local endpoint.
 EOF
 }
 
 case "${1:-help}" in
     list) cmd_list ;;
-    pi) shift; cmd_pi "$@" ;;
+    client) shift; cmd_client "$@" ;;
     start) shift; cmd_start "$@" ;;
     profile) shift; cmd_profile "$@" ;;
     stop) cmd_stop ;;
