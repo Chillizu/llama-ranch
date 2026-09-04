@@ -2,7 +2,7 @@
 
 Picking a model + quantization that fits the device, based on a live HuggingFace search and a memory budget.
 
-## Capacity formula (universal)
+## Capacity formula (starting point)
 
 ```
 weights_GiB + KV(ctx) + ~2 GiB buffer  ≤  available_memory

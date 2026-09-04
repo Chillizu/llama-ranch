@@ -23,7 +23,7 @@ Device-agnostic guide to run, recommend, and tune local GGUF models on whatever 
 3. **Tune** inference → quantization, `-c` context, `-t` threads, KV-cache type, samplers in `references/tuning.md`.
 4. **Run** → `llama-server -m model.gguf <flags>` (or the `llmctl-template.sh` manager). Verify with `curl /health` then one `/v1/chat/completions`.
 5. **Wire agentic** (optional) → any OpenAI-compatible client against the local endpoint in `references/agentic.md`.
-6. **Fix** crashes / bad output → generic bug/fix matrix in `references/stability.md`.
+6. **Fix** crashes / bad output → common failure modes and fixes in `references/stability.md`.
 
 ## Key invariants (apply regardless of hardware)
 
@@ -47,8 +47,8 @@ Device-agnostic guide to run, recommend, and tune local GGUF models on whatever 
 
 - `references/bootstrap.md` — from-zero setup: build/install llama.cpp with the right backend, verify --list-devices, download a model.
 - `references/tuning.md` — quantization / context / threads / samplers methodology, decode ceiling, decay behavior.
-- `references/stability.md` — generic bug → fix matrix, regression recipe.
-- `references/agentic.md` — wiring any OpenAI-compatible client to the local endpoint, tool-call verification, bench methodology.
+- `references/stability.md` — common failure modes and fixes, plus a regression recipe.
+- `references/agentic.md` — local agentic via OpenAI-compatible endpoint, tool-call verification, bench methodology, pi wiring.
 - `references/build-your-own-manager.md` — design + adapter steps for a personal model manager.
 
 ## Requirements

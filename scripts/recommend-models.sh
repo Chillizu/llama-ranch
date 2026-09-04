@@ -2,11 +2,11 @@
 # recommend-models.sh — live HuggingFace GGUF search with fits hints.
 # Usage:
 #   recommend-models.sh "<query>" [--ram <gib>] [--ctx <tokens>]
-# Stages (no hardcoded model tables — always live):
+# Stages (the model list is fetched live):
 #   1. search        /api/models?search=..&filter=gguf&full=true  → GGUF sibling filenames
 #   2. sizes         /api/models/<id>?blobs=true per model         → .gguf file sizes
 #   3. KV math       base-model config.json (from base_model: tag) → real n_layer/kv_heads/head_dim
-# Then prints a table with a fits hint against --ram (weights + exact fp16 KV + ~2 GiB buffer).
+# Then prints a table with a fits hint against --ram (weights + estimated fp16 KV + ~2 GiB buffer).
 # Networks that block HF directly: set HF_PROXY (e.g. HF_PROXY=socks5h://127.0.0.1:7891).
 # Falls back to a web_search hint if the API is unreachable.
 # bash 3.2-compatible (no mapfile) — works on stock macOS.
@@ -187,10 +187,11 @@ for mid, quant, size_b in rows:
         continue
     fits = ""
     if ram is not None:
-        kv_use = kv_gib if kv_gib is not None else 0.0
-        headroom = gib + kv_use + 2  # weights + KV + buffer
-        fits = "OK" if headroom <= ram else "no"
-    print(f"{mid[:39]:<40} {quant:<12} {gib:>8.1f} {(kv_gib or 0):>8.2f}  {fits}")
-if ram is not None and not any(configs.get(m) for m,_,_ in rows):
-    print("(KV column missing where base-model config was unavailable; fits uses weights + 2 GiB buffer only)")
+        if kv_gib is None:
+            fits = "unknown"
+        else:
+            headroom = gib + kv_gib + 2
+            fits = "OK" if headroom <= ram else "no"
+    kv_display = f"{kv_gib:>8.2f}" if kv_gib is not None else f"{'?':>8}"
+    print(f"{mid[:39]:<40} {quant:<12} {gib:>8.1f} {kv_display}  {fits}")
 PY

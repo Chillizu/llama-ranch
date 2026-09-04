@@ -1,6 +1,6 @@
 # Stability matrix
 
-Generic symptoms → root causes → fixes. No vendor-specific labels; verify the trigger on your backend before applying.
+Common symptoms → likely causes → fixes. Verify the trigger on your backend before applying a fix.
 
 ## Reasoning-preserving templates swallow output
 

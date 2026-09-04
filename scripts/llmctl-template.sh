@@ -202,7 +202,10 @@ cmd_start() {
         read -ra profile_args < "$pf" || true
         if [ ${#extra_args[@]} -eq 0 ]; then
             echo "Using profile for '$name${variant:+@$variant}': ${profile_args[*]}"
-            set -- ${profile_args[@]+"${profile_args[@]}"}
+            set -- "${profile_args[@]}"
+        else
+            # Explicit args are appended so llama-server's last value wins.
+            set -- "${profile_args[@]}" "${extra_args[@]}"
         fi
     fi
 
@@ -231,6 +234,7 @@ cmd_start() {
     local pid=$!
     echo "$pid" > "$STATE_DIR/chat.pid"
     echo "$name" > "$STATE_DIR/chat.model"
+    echo "$variant" > "$STATE_DIR/chat.variant"
     printf '%s\n' "$BACKEND_FLAGS $*" > "$STATE_DIR/chat.args"
     echo "single" > "$STATE_DIR/chat.type"
     echo "Started PID $pid"
@@ -338,8 +342,12 @@ cmd_client() {
         mpath=$(find_model_by_query "$query")
         [ -z "$mpath" ] && { echo "Model not found: $query"; exit 1; }
         rname=$(model_name "$mpath")
-        if [ "$running_model" != "$rname" ]; then
-            cmd_start ${start_args[@]+"${start_args[@]}"}
+        local requested_variant="" running_variant="$(cat "$STATE_DIR/chat.variant" 2>/dev/null || true)"
+        if [ ${#start_args[@]} -gt 1 ] && [[ "${start_args[1]}" != -* ]] && [ -f "$(profile_file "$rname" "${start_args[1]}")" ]; then
+            requested_variant="${start_args[1]}"
+        fi
+        if [ "$running_model" != "$rname" ] || { [ -n "$requested_variant" ] && [ "$requested_variant" != "$running_variant" ]; }; then
+            cmd_start "${start_args[@]}"
             running_model=$(cat "$STATE_DIR/chat.model")
             rargs=$(cat "$STATE_DIR/chat.args")
             port=$(port_of "$rargs"); port="${port:-$DEFAULT_PORT}"
@@ -390,7 +398,7 @@ cmd_status() {
             rmodel=$(cat "$STATE_DIR/chat.model" 2>/dev/null)
             for pf in "$PROFILE_DIR/$rmodel" "$PROFILE_DIR/$rmodel@"*; do
                 [ -f "$pf" ] || continue
-                if [ "$(cat "$pf")" = "$args" ]; then
+                if [ "$BACKEND_FLAGS $(tr '\n' ' ' < "$pf")" = "$args" ]; then
                     variant=$([ "$pf" = "$PROFILE_DIR/$rmodel" ] && echo default || echo "${pf##*@}")
                     break
                 fi
@@ -405,7 +413,7 @@ cmd_status() {
             fi
         else
             echo "Not running (stale pid file)"
-            rm -f "$STATE_DIR/chat.pid" "$STATE_DIR/chat.model" "$STATE_DIR/chat.args" "$STATE_DIR/chat.type"
+        rm -f "$STATE_DIR/chat.pid" "$STATE_DIR/chat.model" "$STATE_DIR/chat.variant" "$STATE_DIR/chat.args" "$STATE_DIR/chat.type"
         fi
     else
         echo "Not running"

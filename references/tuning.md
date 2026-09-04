@@ -35,7 +35,7 @@ Patterns (verify on your hardware, they vary):
 - Smaller models: often fastest at *fewer* threads (counter-intuitive) or insensitive.
 - Sub-2B models: insensitive — keep a default.
 
-**Decode ceiling** = `weights_GiB / effective_bandwidth`. Once decode stops improving with tuning you're at the ceiling — the only real levers are a smaller model/MoE or a faster bus. Stop tuning there.
+As a rough decode ceiling, `tokens/s ≈ effective_bandwidth_GiB_s / weights_GiB`. This is only a bandwidth-bound estimate; cache traffic, dequantization, compute, and kernel overhead make real throughput lower. Once decode stops improving with tuning you're at the ceiling — the only real levers are a smaller model/MoE or a faster bus. Stop tuning there.
 
 ## Decay behavior
 
